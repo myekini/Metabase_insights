@@ -1,0 +1,51 @@
+version: "3.9"
+services:
+  metabase:
+    image: metabase/metabase:latest
+    container_name: metabase-staging
+    hostname: metabase-staging
+    environment:
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: metabaseappdb_staging
+      MB_DB_PORT: 5432
+      MB_DB_USER: metabase_staging
+      MB_DB_PASS: staging_password
+      MB_DB_HOST: postgres
+      MB_ENCRYPTION_SECRET_KEY: your_staging_secret_key
+    ports:
+      - 3001:3000
+    volumes:
+      - /dev/urandom:/dev/random:ro
+      - metabase-data-staging:/metabase-data
+    networks:
+      - metanet-staging
+    restart: unless-stopped
+    healthcheck:
+      test: curl --fail -I http://localhost:3000/api/health || exit 1
+      interval: 15s
+      timeout: 5s
+      retries: 5
+
+  postgres:
+    image: postgres:15
+    container_name: postgres-staging
+    hostname: postgres-staging
+    environment:
+      POSTGRES_USER: metabase_staging
+      POSTGRES_DB: metabaseappdb_staging
+      POSTGRES_PASSWORD: staging_password
+    ports:
+      - 5433:5432
+    volumes:
+      - postgres-data-staging:/var/lib/postgresql/data
+    networks:
+      - metanet-staging
+    restart: unless-stopped
+
+volumes:
+  postgres-data-staging:
+  metabase-data-staging:
+
+networks:
+  metanet-staging:
+    driver: bridge
