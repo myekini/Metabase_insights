@@ -1,0 +1,34 @@
+name: CI/CD Pipeline Trigger
+
+on:
+  push:
+    branches:
+      - staging
+      - production
+
+jobs:
+  trigger-pipeline:
+    name: Trigger AWS CDK Pipeline
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the code
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # Step 2: Install AWS CDK
+      - name: Install AWS CDK
+        run: npm install -g aws-cdk
+
+      # Step 3: Install Dependencies
+      - name: Install Dependencies
+        run: pip install -r cdk/requirements.txt
+
+      # Step 4: Trigger the CDK PipelineStack
+      - name: Deploy PipelineStack
+        run: |
+          if [ "${{ github.ref_name }}" == "staging" ]; then
+            cdk deploy PipelineStack --require-approval never
+          elif [ "${{ github.ref_name }}" == "production" ]; then
+            cdk deploy PipelineStack --require-approval never
+          fi

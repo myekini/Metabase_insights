@@ -1,30 +1,62 @@
-from aws_cdk import aws_ec2 as ec2, aws_s3 as s3, aws_iam as iam, core
+from aws_cdk import (
+    aws_ecs as ecs,
+    aws_ecs_patterns as ecs_patterns,
+    aws_iam as iam,
+    aws_logs as logs,
+    core
+)
 
 class StagingStack(core.Stack):
-    def __init__(self, scope: core.Construct, id: str, shared_stack: core.Stack, **kwargs):
+    def __init__(self, scope: core.Construct, id: str, **kwargs):
         super().__init__(scope, id, **kwargs)
 
-        # Use shared VPC and security group
-        vpc = shared_stack.vpc
-        shared_sg = shared_stack.shared_sg
 
-        # S3 bucket for staging environment
-        self.staging_bucket = s3.Bucket(
-            self, "StagingBucket",
-            versioned=True,
-            removal_policy=core.RemovalPolicy.DESTROY,
-            auto_delete_objects=True
-        )
+        # Create ECS Cluster
+        cluster = ecs.Cluster(self, "Staging_Cluster")
 
-        # Add IAM permissions to existing EC2 instance
-        iam_role = iam.Role.from_role_arn(
+        # Define IAM Role for ECS Task Execution
+        task_execution_role = iam.Role(
             self,
-            "ExistingEC2Role",
-            role_arn="arn:aws:iam::<account-id>:role/<existing-ec2-role>"
+            "StagingTaskExecutionRole",
+            assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AmazonECSTaskExecutionRolePolicy")
+            ]
         )
-        iam_role.add_to_policy(
-            iam.PolicyStatement(
-                actions=["s3:*"],
-                resources=[self.staging_bucket.bucket_arn + "/*"]
-            )
+
+        # Create Fargate Task Definition
+        task_definition = ecs.FargateTaskDefinition(
+            self,
+            "Staging_Task",
+            cpu=256,  # 0.25 vCPU
+            memory_limit_mib=512,  # 0.5 GB memory
+            execution_role=task_execution_role
+        )
+
+        # Add Metabase Container
+        container = task_definition.add_container(
+            "StagingMetabaseContainer",
+            image=ecs.ContainerImage.from_ecr_repository(
+                ecs.Repository.from_repository_name(self, "Staging_Repo", "metabase-staging-repo"),
+                tag="latest"
+            ),
+            logging=ecs.LogDriver.aws_logs(stream_prefix="Staging_Metabase"),
+            environment={
+                "MB_DB_TYPE": "postgres",
+                "MB_DB_DBNAME": "metabase_staging",
+                "MB_DB_PORT": "5432",
+                "MB_DB_USER": "staging_user",
+                "MB_DB_PASS": "secure_password",
+                "MB_DB_HOST": "staging-db.endpoint.amazonaws.com"
+            }
+        )
+        container.add_port_mappings(ecs.PortMapping(container_port=3000))
+
+        # Create ECS Service with Load Balancer
+        ecs_patterns.ApplicationLoadBalancedFargateService(
+            self,
+            "StagingService",
+            cluster=cluster,
+            task_definition=task_definition,
+            public_load_balancer=True
         )

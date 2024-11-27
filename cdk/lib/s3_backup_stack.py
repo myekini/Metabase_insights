@@ -1,46 +1,56 @@
-from aws_cdk import core, aws_s3 as s3, aws_iam as iam, aws_kms as kms
+from aws_cdk import (
+    aws_ec2 as ec2,
+    aws_ecs as ecs,
+    aws_iam as iam,
+    aws_events as events,
+    aws_events_targets as targets,
+    core
+)
 
-class S3BackupStack(core.Stack):
-
-    def __init__(self, scope: core.Construct, id: str, **kwargs) -> None:
+class BackupTaskStack(core.Stack):
+    def __init__(self, scope: core.Construct, id: str, **kwargs):
         super().__init__(scope, id, **kwargs)
 
-        # Optional: KMS Key for Encryption
-        encryption_key = kms.Key(
-            self, 
-            "S3BackupEncryptionKey",
-            description="KMS key for encrypting S3 backups",
-            enable_key_rotation=True
-        )
+        # Create ECS Cluster
+        cluster = ecs.Cluster(self, "BackupCluster")
 
-        # S3 Backup Bucket
-        self.backup_bucket = s3.Bucket(
+        # Define IAM Role for Backup Task
+        task_execution_role = iam.Role(
             self,
-            "MetabaseBackupBucket",
-            versioned=True,
-            removal_policy=core.RemovalPolicy.RETAIN,  # Retain backups even if stack is deleted
-            lifecycle_rules=[
-                s3.LifecycleRule(
-                    enabled=True,
-                    expiration=core.Duration.days(90),  # Automatically delete objects older than 90 days
-                )
-            ],
-            encryption=s3.BucketEncryption.KMS,  # Enable encryption
-            encryption_key=encryption_key,
-            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,  # Prevent public access
+            "BackupTaskExecutionRole",
+            assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
+            managed_policies=[
+                iam.ManagedPolicy.from_aws_managed_policy_name("service-role/AmazonECSTaskExecutionRolePolicy"),
+                iam.ManagedPolicy.from_aws_managed_policy_name("AmazonS3FullAccess")
+            ]
         )
 
-        # IAM Role for EC2 Access
-        self.backup_bucket_access_role = iam.Role(
+        # Create Fargate Task Definition for Backups
+        task_definition = ecs.FargateTaskDefinition(
             self,
-            "S3BackupAccessRole",
-            assumed_by=iam.ServicePrincipal("ec2.amazonaws.com"),
-            description="Role for accessing the backup bucket from EC2",
+            "BackupTaskDef",
+            cpu=256,
+            memory_limit_mib=512,
+            execution_role=task_execution_role
         )
 
-        # Grant EC2 Role Access to the Bucket
-        self.backup_bucket.grant_read_write(self.backup_bucket_access_role)
+        # Add Backup Container
+        task_definition.add_container(
+            "BackupContainer",
+            image=ecs.ContainerImage.from_asset("./docker/backup"),
+            logging=ecs.LogDriver.aws_logs(stream_prefix="BackupLogs")
+        )
 
-        # Outputs for Easy Reference
-        core.CfnOutput(self, "BackupBucketName", value=self.backup_bucket.bucket_name)
-        core.CfnOutput(self, "BackupBucketArn", value=self.backup_bucket.bucket_arn)
+        # Schedule ECS Task
+        rule = events.Rule(
+            self,
+            "DailyBackupRule",
+            schedule=events.Schedule.cron(hour="2", minute="0"),  # Daily at 2 AM
+        )
+        rule.add_target(
+            targets.EcsTask(
+                cluster=cluster,
+                task_definition=task_definition,
+                subnet_selection=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PRIVATE)
+            )
+        )
